@@ -33,6 +33,9 @@ impl Hookable for BuildRequest {
             owner,
         })
     }
+    fn build_clone_url(&self) -> String {
+        format!("git@bitbucket.org:{}/{}.git", self.owner, self.reponame)
+    }
 }
 
 fn json_val_as_str(val: &Value, key: &str) -> Result<String> {

@@ -1,27 +1,36 @@
 
 use std::io::Read;
-use std::fs::File;
+use std::fs::{DirBuilder, File, create_dir, read_dir, copy};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
-use git2::{Repository, Oid};
 use toml;
 
+use BuildInstruction;
+use BuildStep;
 use errors::*;
 use integrations::Integrations;
 
+pub mod git;
 
 const FNAME_CONFIG: &'static str = "rustic-conf.toml";
 
 
 #[derive(Deserialize, Debug)]
 struct RawConfig {
+    meta: MetaConfig,
     repos: Vec<RepoConfig>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MetaConfig {
+    pub build_root: PathBuf,
 }
 
 #[derive(Debug)]
 pub struct Config {
+    pub meta: MetaConfig,
     pub repos: HashMap<(String, String), RepoConfig>,
 }
 
@@ -31,6 +40,7 @@ pub struct RepoConfig {
     pub owner: String,
     pub reponame: String,
     pub api_token: String,
+    pub build_instruction: BuildInstruction,
 }
 
 
@@ -46,51 +56,45 @@ pub fn load_config(path: Option<PathBuf>) -> Result<Config> {
     let mut raw: RawConfig = toml::from_str(&contents).chain_err(
         || "Bad format in config-file",
     )?;
+    let meta = raw.meta;
     let mut repos = HashMap::new();
     for repo in raw.repos.into_iter() {
         let key = (repo.owner.clone(), repo.reponame.clone());
         repos.insert(key, repo);
     }
-    Ok(Config { repos })
+    Ok(Config { meta, repos })
 }
 
-pub fn fetch_origin_branches(repo: &Repository) -> Result<()> {
-    let mut remote = repo.find_remote("origin").chain_err(
-        || "Failed remote-find",
-    )?;
-    let refspecs: Vec<String> = remote
-        .refspecs()
-        .filter_map(|v| v.str().map(|s| s.to_owned()))
-        .collect();
-    let str_refs: Vec<&str> = refspecs.iter().map(|s| s.as_str()).collect();
-    remote.fetch(str_refs.as_slice(), None, None).chain_err(
-        || "Failed fetching",
-    )
-}
-
-pub fn checkout(repo: &Repository, checksum: &str) -> Result<()> {
-    // TODO Simplify function calls by using asref to handle both String and &str
-    let oid = Oid::from_str(checksum).chain_err(|| {
-        format!("Not a valid Oid: \"{}\"", checksum)
-    })?;
-    repo.set_head_detached(oid).chain_err(|| "failed checkout")
-}
-
-pub fn init_repo(path: &Path, url: &str) -> Result<Repository> {
-    match Repository::init(path) {
-        Ok(repo) => Ok(repo),
-        Err(e) => {
-            warn!(
-                "Could not load local repository at {:?} due to {:?}, \
-                attempting cloning",
-                path,
-                e.description()
-            );
-            Ok(Repository::clone_recurse(&url, &path).chain_err(
-                || "Failed clone_recurse",
-            )?)
+pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    for entry in read_dir(src).chain_err(
+        || format!("Failed read_dir of {:?}", src),
+    )?
+    {
+        let entry = entry.chain_err(|| "Failed reading entry")?;
+        let path = entry.path();
+        let mut subdst = dst.to_owned();
+        subdst.push(path.file_name().ok_or(format!(
+            "Could not get filename of {:?}",
+            path
+        ))?);
+        if path.is_dir() {
+            create_dir(&subdst).chain_err(|| {
+                format!("Failed to create {:?}", subdst)
+            })?;
+            copy_dir(&path, &subdst).chain_err(
+                || "Failed recursive copy",
+            )?;
+        } else {
+            copy(&path, &subdst).chain_err(|| {
+                format!("Failed copy of {:?} to {:?}", path, subdst)
+            })?;
         }
     }
+    Ok(())
+}
+
+pub fn prettify_command_output(raw: &[u8], indent_size: usize) -> String {
+    String::from_utf8_lossy(raw).replace("\\n", "\n")
 }
 
 #[cfg(test)]
@@ -134,14 +138,19 @@ mod tests {
         let mut file = File::create(path.clone()).unwrap();
         file.write_all(
             b"
-[config]
+[meta]
 build_root = \"/opt/rustic/build_root\"
 
 [[repos]]
 integration = \"bitbucket\"
 owner = \"purew\"
 reponame = \"foobar\"
-api_token = \"biggaboo\"",
+api_token = \"biggaboo\"
+build_instruction = { steps = [
+      {cmd = \"make\"},
+      {cmd = \"make test\"},
+    ]}
+",
         ).unwrap();
         utils::load_config(Some(path)).unwrap();
 
