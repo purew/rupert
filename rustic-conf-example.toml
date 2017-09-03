@@ -1,0 +1,9 @@
+
+[config]
+build_root = "/opt/rustic/build_root"
+
+[[repos]]
+integration = "bitbucket"
+owner = "superman"
+reponame = "linux"
+api_token = "banana-crepes"
