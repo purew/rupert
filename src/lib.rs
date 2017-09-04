@@ -68,23 +68,43 @@ impl BuildRequest {
 
 /// repo:commit checked out on local path
 pub struct LocalCode {
-    root: PathBuf,
+    path_root: PathBuf,
+    path_repo: PathBuf,
+    path_build: PathBuf,
+    path_cache: PathBuf,
     repo: git2::Repository,
 }
 
 impl LocalCode {
-    pub fn new(root: &Path, req: &BuildRequest) -> Result<Self> {
+
+    /// Initiate a new `LocalCode` object representing the local data on disk.
+    ///
+    /// Either clones repository or fetches and checks out commit in `BuildRequest`.
+    pub fn new(rubbit_root: &Path, req: &BuildRequest) -> Result<Self> {
+        let mut path_root = rubbit_root.to_owned();
+        path_root.push(&req.owner);
+        path_root.push(&req.reponame);
+
+        let path_repo = LocalCode::subdir(&path_root, "repo");
+        let path_cache = LocalCode::subdir(&path_root, "cache");
+        let path_build = LocalCode::path_build(&path_root, &req.commit);
+
         let url = req.build_clone_url();
-        let repo = utils::git::init_repo(&root, &url)?;
+        let repo = utils::git::init_repo(&path_repo, &url)?;
         utils::git::fetch_origin_branches(&repo)?;
         utils::git::checkout(&repo, &req.commit)?;
-        let root = root.to_owned();
-        Ok(LocalCode { root, repo })
+
+        Ok(LocalCode { path_root, path_build, path_repo, path_cache, repo})
     }
 
-    fn build_dir(&self, commit: &str) -> PathBuf {
-        let mut path = self.root.clone();
-        path.pop();
+    fn subdir(root: &PathBuf, name: &str) -> PathBuf {
+        let mut path = root.to_owned();
+        path.push("cache");
+        path
+    }
+
+    fn path_build(root: &PathBuf, commit: &str) -> PathBuf {
+        let mut path = root.clone();
         path.push("builds");
         // TODO Do we want each build in a new dir?
         //path.push(commit);
@@ -92,38 +112,46 @@ impl LocalCode {
         path
     }
 
-    pub fn execute(
-        self,
-        commit: &str,
-        build_instruction: &BuildInstruction,
-    ) -> Result<BuildResult> {
-        let build_dir = self.build_dir(commit);
-
-        if build_dir.exists() {
-            let res = remove_dir_all(&build_dir).chain_err(|| {
-                format!("Failed remove of {:?}", build_dir)
+    fn prepare_dirs(&self) -> Result<()> {
+        if self.path_build.exists() {
+            let res = remove_dir_all(&self.path_build).chain_err(|| {
+                format!("Failed remove of {:?}", self.path_build)
             });
             if let Err(e) = res {
                 warn!(
                     "Could not remove old build in {:?} due to {:?}",
-                    build_dir,
+                    self.path_build,
                     e
                 );
             }
         }
-        create_dir_all(&build_dir).chain_err(|| {
-            format!("Failed creating build-dir: {:?}", build_dir)
+        create_dir_all(&self.path_build).chain_err(|| {
+            format!("Failed creating build-dir: {:?}", self.path_build)
         })?;
 
-        utils::copy_dir(&self.root, &build_dir)?;
+        utils::copy_dir(&self.path_repo, &self.path_build)?;
+        create_dir_all(&self.path_cache).chain_err(|| {
+            format!("Failed creating cache-dir: {:?}", self.path_cache)
+        })?;
+        Ok(())
+    }
 
-        info!("Executing build in {:?}", build_dir);
+    /// Execute build-steps from configuration on local code
+    pub fn execute(
+        self,
+        build_instruction: &BuildInstruction,
+    ) -> Result<BuildResult> {
+
+        self.prepare_dirs()?;
+
+        info!("Executing build in {:?}", self.path_build);
         let mut results = Vec::new();
         for step in &build_instruction.steps {
             // TODO Clean env so Command runs without outside knowledge
+            info!("Executing child with {}", &step.cmd);
             let mut child = Command::new("bash")
-                .current_dir(&build_dir)
-                .env("BUILD_PATH", &build_dir)
+                .current_dir(&self.path_build)
+                .env("BUILD_PATH", &self.path_build)
                 .args(&["-c", &step.cmd])
                 .spawn()
                 .chain_err(|| "Failed executing step")?;

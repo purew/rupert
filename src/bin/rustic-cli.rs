@@ -18,6 +18,7 @@ use rubbit::utils::RepoConfig;
 fn run() -> Result<()> {
     init_logger()?;
 
+    // Load config and program arguments
     let conf = rubbit::utils::load_config(None)?;
     let pargs = parse_args()?;
 
@@ -38,19 +39,14 @@ fn run() -> Result<()> {
     )?;
 
     info!("Received a new build-request: \"{:?}\"", build_request);
-    let mut repopath = conf.meta.build_root.clone();
-    repopath.push(pargs.owner);
-    repopath.push(pargs.reponame);
-    repopath.push("source");
-    let local_code = rubbit::LocalCode::new(&repopath, &build_request)
+    let local_code = rubbit::LocalCode::new(&conf.meta.build_root, &build_request)
         .chain_err(|| {
             format!("Failed checking out code from {:?}", build_request)
         })?;
 
     let results = local_code.execute(
-        &pargs.commit,
         &repo_conf.build_instruction,
-    )?;
+    ).chain_err(|| "Failed execution of build")?;
     if !results.successful() {
         for (i, step) in results.steps.iter().enumerate() {
             println!("Step {} resulted in {:?}", i, step.status);
