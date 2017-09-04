@@ -3,22 +3,22 @@ extern crate log;
 extern crate env_logger;
 extern crate clap;
 
-extern crate rustic;
+extern crate rubbit;
 
 use std::env;
 
 use log::LogLevelFilter;
 use env_logger::LogBuilder;
 
-use rustic::BuildStatus;
-use rustic::errors::*;
-use rustic::utils::RepoConfig;
+use rubbit::BuildStatus;
+use rubbit::errors::*;
+use rubbit::utils::RepoConfig;
 
 
 fn run() -> Result<()> {
     init_logger()?;
 
-    let conf = rustic::utils::load_config(None)?;
+    let conf = rubbit::utils::load_config(None)?;
     let pargs = parse_args()?;
 
     let key = (pargs.owner.clone(), pargs.reponame.clone());
@@ -30,7 +30,7 @@ fn run() -> Result<()> {
     let integration = repo_conf.integration.clone();
     let api_token = repo_conf.api_token.clone();
 
-    let build_request = rustic::BuildRequest::new(
+    let build_request = rubbit::BuildRequest::new(
         integration,
         pargs.owner.clone(),
         pargs.reponame.clone(),
@@ -42,7 +42,7 @@ fn run() -> Result<()> {
     repopath.push(pargs.owner);
     repopath.push(pargs.reponame);
     repopath.push("source");
-    let local_code = rustic::LocalCode::new(&repopath, &build_request)
+    let local_code = rubbit::LocalCode::new(&repopath, &build_request)
         .chain_err(|| {
             format!("Failed checking out code from {:?}", build_request)
         })?;
@@ -69,9 +69,9 @@ struct ProgramArgs {
 }
 
 fn parse_args() -> Result<ProgramArgs> {
-    let matches = clap::App::new("rustic-cli")
+    let matches = clap::App::new("rubbit-cli")
         .version("0.1")
-        .about("CLI for rustic build-server")
+        .about("CLI for rubbit build-server")
         .arg(
             clap::Arg::with_name("owner")
                 .short("o")

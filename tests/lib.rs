@@ -1,6 +1,6 @@
 
 
-extern crate rustic;
+extern crate rubbit;
 
 
 #[test]

@@ -1,6 +1,6 @@
 
 [config]
-build_root = "/opt/rustic/build_root"
+build_root = "/opt/rubbit/build_root"
 
 [[repos]]
 integration = "bitbucket"

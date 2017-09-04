@@ -14,7 +14,7 @@ use integrations::Integrations;
 
 pub mod git;
 
-const FNAME_CONFIG: &'static str = "rustic-conf.toml";
+const FNAME_CONFIG: &'static str = "rubbit-conf.toml";
 
 
 #[derive(Deserialize, Debug)]
@@ -113,7 +113,7 @@ mod tests {
     lazy_static!{
         pub static ref TEST_DIR: PathBuf = {
             let mut path = env::temp_dir();
-            path.push("rustic-tests");
+            path.push("rubbit-tests");
             DirBuilder::new().create(&path);
             path
         };
@@ -139,7 +139,7 @@ mod tests {
         file.write_all(
             b"
 [meta]
-build_root = \"/opt/rustic/build_root\"
+build_root = \"/opt/rubbit/build_root\"
 
 [[repos]]
 integration = \"bitbucket\"
