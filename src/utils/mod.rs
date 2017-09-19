@@ -14,7 +14,7 @@ use integrations::Integrations;
 
 pub mod git;
 
-const FNAME_CONFIG: &'static str = "rubbit-conf.toml";
+const FNAME_CONFIG: &'static str = "rupert-conf.toml";
 
 
 #[derive(Deserialize, Debug)]
@@ -93,7 +93,7 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn prettify_command_output(raw: &[u8], indent_size: usize) -> String {
+pub fn prettify_command_output(raw: &[u8]) -> String {
     String::from_utf8_lossy(raw).replace("\\n", "\n")
 }
 
@@ -113,7 +113,7 @@ mod tests {
     lazy_static!{
         pub static ref TEST_DIR: PathBuf = {
             let mut path = env::temp_dir();
-            path.push("rubbit-tests");
+            path.push("rupert-tests");
             DirBuilder::new().create(&path);
             path
         };
@@ -139,7 +139,7 @@ mod tests {
         file.write_all(
             b"
 [meta]
-build_root = \"/opt/rubbit/build_root\"
+build_root = \"/opt/rupert/build_root\"
 
 [[repos]]
 integration = \"bitbucket\"

@@ -1,6 +1,6 @@
 
 
-extern crate rubbit;
+extern crate rupert;
 
 
 #[test]

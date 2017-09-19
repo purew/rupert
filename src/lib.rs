@@ -15,10 +15,12 @@ extern crate log;
 use std::error::Error;
 use std::fs::{create_dir_all, remove_dir_all};
 use std::hash::Hasher;
+use std::io::{Bytes, Read};
+use std::sync::mpsc::SyncSender;
 use std::thread::sleep;
 use std::time::Duration;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, Child, ChildStdout};
 
 use git2::Repository;
 
@@ -66,50 +68,55 @@ impl BuildRequest {
     }
 }
 
+#[derive(Debug)]
+pub enum BuildUpdates {
+    Started,
+    StepStarted(String),
+    StepNewOutput(String),
+    StepFinished(BuildStepResult),
+    Finished,
+}
+
 /// repo:commit checked out on local path
-pub struct LocalCode {
+pub struct Runner {
     path_root: PathBuf,
     path_repo: PathBuf,
     path_build: PathBuf,
     path_cache: PathBuf,
     repo: git2::Repository,
+    tx: Option<SyncSender<BuildUpdates>>,
 }
 
-impl LocalCode {
-
-    /// Initiate a new `LocalCode` object representing the local data on disk.
+impl Runner {
+    /// Initiate a new `Runner` object representing the local data on disk.
     ///
     /// Either clones repository or fetches and checks out commit in `BuildRequest`.
-    pub fn new(rubbit_root: &Path, req: &BuildRequest) -> Result<Self> {
-        let mut path_root = rubbit_root.to_owned();
+    pub fn new(
+        rupert_root: &Path,
+        req: &BuildRequest,
+        tx: Option<SyncSender<BuildUpdates>>,
+    ) -> Result<Self> {
+        let mut path_root = rupert_root.to_owned();
         path_root.push(&req.owner);
         path_root.push(&req.reponame);
 
-        let path_repo = LocalCode::subdir(&path_root, "repo");
-        let path_cache = LocalCode::subdir(&path_root, "cache");
-        let path_build = LocalCode::path_build(&path_root, &req.commit);
+        let path_repo = Runner::subdir(&path_root, "repo");
+        let path_cache = Runner::subdir(&path_root, "cache");
+        let path_build = Runner::path_build(&path_root, &req.commit);
 
         let url = req.build_clone_url();
         let repo = utils::git::init_repo(&path_repo, &url)?;
         utils::git::fetch_origin_branches(&repo)?;
         utils::git::checkout(&repo, &req.commit)?;
 
-        Ok(LocalCode { path_root, path_build, path_repo, path_cache, repo})
-    }
-
-    fn subdir(root: &PathBuf, name: &str) -> PathBuf {
-        let mut path = root.to_owned();
-        path.push("cache");
-        path
-    }
-
-    fn path_build(root: &PathBuf, commit: &str) -> PathBuf {
-        let mut path = root.clone();
-        path.push("builds");
-        // TODO Do we want each build in a new dir?
-        //path.push(commit);
-        path.push("common");
-        path
+        Ok(Runner {
+            path_root,
+            path_build,
+            path_repo,
+            path_cache,
+            repo,
+            tx,
+        })
     }
 
     fn prepare_dirs(&self) -> Result<()> {
@@ -137,10 +144,7 @@ impl LocalCode {
     }
 
     /// Execute build-steps from configuration on local code
-    pub fn execute(
-        self,
-        build_instruction: &BuildInstruction,
-    ) -> Result<BuildResult> {
+    pub fn execute(self, build_instruction: &BuildInstruction) -> Result<BuildResult> {
 
         self.prepare_dirs()?;
 
@@ -148,49 +152,8 @@ impl LocalCode {
         let mut results = Vec::new();
         for step in &build_instruction.steps {
             // TODO Clean env so Command runs without outside knowledge
-            info!("Executing child with {}", &step.cmd);
-            let mut child = Command::new("bash")
-                .current_dir(&self.path_build)
-                .env("BUILD_PATH", &self.path_build)
-                .args(&["-c", &step.cmd])
-                .spawn()
-                .chain_err(|| "Failed executing step")?;
-
-            let mut status = BuildStatus::InProgress;
-            let mut keep_waiting = true;
-            while keep_waiting {
-                match child.try_wait() {
-                    Ok(Some(retval)) => {
-                        status = if retval.success() {
-                            BuildStatus::Successful
-                        } else {
-                            BuildStatus::Failed
-                        };
-                        keep_waiting = false;
-                    }
-                    Ok(None) => {
-                        // TODO Add timeout
-                        sleep(Duration::new(1, 0));
-                    }
-                    Err(e) => {
-                        return Err(e).chain_err(|| "Could not wait on child-process");
-                    }
-                };
-            }
-            let indent = "    ";
-            let out = "".to_owned();
-            //format!("===== STDOUT =====\n{}{:?}\n===== STDERR =====\n{}{:?}\n=====",
-            //                  &indent,
-            //                  "",
-            //                     //utils::prettify_command_output(&output.stdout, indent.len()),
-            //                  &indent,
-            //                  "",
-            //                     //utils::prettify_command_output(&output.stderr, indent.len()));
-            let step_result = BuildStepResult {
-                status: status.clone(),
-                cmd: step.cmd.clone(),
-                output: out,
-            };
+            let step_result = self.spawn_child(&step)?;
+            let status = step_result.status.clone();
             results.push(step_result);
             if status != BuildStatus::Successful {
                 break;
@@ -198,12 +161,100 @@ impl LocalCode {
         }
         Ok(BuildResult { steps: results })
     }
+
+    fn spawn_child(&self, step: &BuildStep) -> Result<BuildStepResult> {
+        info!("Executing child with {}", &step.cmd);
+        let mut child = Command::new("bash")
+            .current_dir(&self.path_build)
+            .env("BUILD_PATH", &self.path_build)
+            .args(&["-c", &step.cmd])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .chain_err(|| "Failed executing step")?;
+        self.send_update(BuildUpdates::Started)?;
+
+        let mut status = BuildStatus::InProgress;
+        let mut keep_waiting = true;
+        let mut stdout_byte = 0;
+        let mut stdout_agg = String::new();
+        while keep_waiting {
+            match child.try_wait() {
+                Ok(val) => {
+                    let (s, new_offset) =
+                        Runner::grab_more_bytes_from_child(&mut child, stdout_byte)?;
+                    stdout_byte = new_offset;
+                    self.send_update(BuildUpdates::StepNewOutput(s))?;
+                    match val {
+                        Some(retval) => {
+                            status = if retval.success() {
+                                BuildStatus::Successful
+                            } else {
+                                BuildStatus::Failed
+                            };
+                            keep_waiting = false;
+                        }
+                        None => {
+                            // TODO Add timeout
+                            sleep(Duration::new(1, 0));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(e).chain_err(|| "Could not wait on child-process");
+                }
+            };
+        }
+        Ok(BuildStepResult {
+            status: status.clone(),
+            cmd: step.cmd.clone(),
+            output: stdout_agg,
+        })
+    }
+
+    fn grab_more_bytes_from_child(child: &mut Child, offset: usize) -> Result<(String, usize)> {
+        use std::io;
+        let new_out = child.stdout.as_mut().unwrap().bytes();
+        let bytes = new_out
+            .skip(offset)
+            .map(|v| v.chain_err(|| "Failed reading child output"))
+            .collect::<Result<Vec<u8>>>()?;
+        let new_offset = offset + bytes.len();
+        let s = String::from_utf8_lossy(&bytes).into_owned();
+        Ok((s, new_offset))
+    }
+
+    fn send_update(&self, update: BuildUpdates) -> Result<()> {
+        match &self.tx {
+            &Some(ref tx) => {
+                tx.try_send(update).chain_err(
+                    || "Send of update to subscriber failed",
+                )
+            }
+            &None => Ok(()),
+        }
+    }
+
+    fn subdir(root: &PathBuf, name: &str) -> PathBuf {
+        let mut path = root.to_owned();
+        path.push("cache");
+        path
+    }
+
+    fn path_build(root: &PathBuf, commit: &str) -> PathBuf {
+        let mut path = root.clone();
+        path.push("builds");
+        // TODO Do we want each build in a new dir?
+        //path.push(commit);
+        path.push("common");
+        path
+    }
 }
 
 /// The `BuildConfig` containing all information needed for running tests
 pub struct BuildConfig {
     request: BuildRequest,
-    local_code: LocalCode,
+    runner: Runner,
     build_instruction: BuildInstruction,
 }
 
@@ -233,6 +284,7 @@ pub struct BuildStep {
 }
 
 /// The result of executing a `BuildStep`
+#[derive(Debug)]
 pub struct BuildStepResult {
     pub status: BuildStatus,
     pub cmd: String,

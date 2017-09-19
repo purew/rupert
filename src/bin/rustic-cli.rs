@@ -3,23 +3,23 @@ extern crate log;
 extern crate env_logger;
 extern crate clap;
 
-extern crate rubbit;
+extern crate rupert;
 
 use std::env;
 
 use log::LogLevelFilter;
 use env_logger::LogBuilder;
 
-use rubbit::BuildStatus;
-use rubbit::errors::*;
-use rubbit::utils::RepoConfig;
+use rupert::BuildStatus;
+use rupert::errors::*;
+use rupert::utils::RepoConfig;
 
 
 fn run() -> Result<()> {
     init_logger()?;
 
     // Load config and program arguments
-    let conf = rubbit::utils::load_config(None)?;
+    let conf = rupert::utils::load_config(None)?;
     let pargs = parse_args()?;
 
     let key = (pargs.owner.clone(), pargs.reponame.clone());
@@ -31,7 +31,7 @@ fn run() -> Result<()> {
     let integration = repo_conf.integration.clone();
     let api_token = repo_conf.api_token.clone();
 
-    let build_request = rubbit::BuildRequest::new(
+    let build_request = rupert::BuildRequest::new(
         integration,
         pargs.owner.clone(),
         pargs.reponame.clone(),
@@ -39,14 +39,14 @@ fn run() -> Result<()> {
     )?;
 
     info!("Received a new build-request: \"{:?}\"", build_request);
-    let local_code = rubbit::LocalCode::new(&conf.meta.build_root, &build_request)
+    let runner = rupert::Runner::new(&conf.meta.build_root, &build_request, None)
         .chain_err(|| {
             format!("Failed checking out code from {:?}", build_request)
         })?;
 
-    let results = local_code.execute(
-        &repo_conf.build_instruction,
-    ).chain_err(|| "Failed execution of build")?;
+    let results = runner.execute(&repo_conf.build_instruction).chain_err(
+        || "Failed execution of build",
+    )?;
     if !results.successful() {
         for (i, step) in results.steps.iter().enumerate() {
             println!("Step {} resulted in {:?}", i, step.status);
@@ -65,9 +65,9 @@ struct ProgramArgs {
 }
 
 fn parse_args() -> Result<ProgramArgs> {
-    let matches = clap::App::new("rubbit-cli")
+    let matches = clap::App::new("rupert-cli")
         .version("0.1")
-        .about("CLI for rubbit build-server")
+        .about("CLI for rupert build-server")
         .arg(
             clap::Arg::with_name("owner")
                 .short("o")
