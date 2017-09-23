@@ -23,7 +23,7 @@ struct RawConfig {
     repos: Vec<RepoConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct MetaConfig {
     pub build_root: PathBuf,
 }
@@ -34,7 +34,7 @@ pub struct Config {
     pub repos: HashMap<(String, String), RepoConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct RepoConfig {
     pub integration: Integrations,
     pub owner: String,

@@ -1,4 +1,6 @@
 #[macro_use]
+extern crate error_chain;
+#[macro_use]
 extern crate log;
 extern crate env_logger;
 extern crate clap;
@@ -6,13 +8,15 @@ extern crate clap;
 extern crate rupert;
 
 use std::env;
+use std::sync::mpsc::{Receiver, channel, Sender};
+use std::thread;
 
 use log::LogLevelFilter;
 use env_logger::LogBuilder;
 
-use rupert::BuildStatus;
+use rupert::{BuildStatus, BuildUpdates, BuildRequest};
 use rupert::errors::*;
-use rupert::utils::RepoConfig;
+use rupert::utils::{RepoConfig, Config};
 
 
 fn run() -> Result<()> {
@@ -23,11 +27,14 @@ fn run() -> Result<()> {
     let pargs = parse_args()?;
 
     let key = (pargs.owner.clone(), pargs.reponame.clone());
-    let repo_conf: &RepoConfig = conf.repos.get(&key).ok_or(format!(
+    let repo_conf: RepoConfig = conf.repos
+        .get(&key)
+        .ok_or(format!(
         "{}/{} not setup in configuration",
         pargs.owner.clone(),
         pargs.reponame.clone(),
-    ))?;
+    ))?
+        .clone();
     let integration = repo_conf.integration.clone();
     let api_token = repo_conf.api_token.clone();
 
@@ -39,7 +46,25 @@ fn run() -> Result<()> {
     )?;
 
     info!("Received a new build-request: \"{:?}\"", build_request);
-    let runner = rupert::Runner::new(&conf.meta.build_root, &build_request, None)
+    let (sender, receiver) = channel();
+    let handle = thread::spawn(move || run_runner(conf, build_request, repo_conf, sender));
+
+    listen(receiver);
+
+    match handle.join() {
+        Ok(res) => res?,
+        Err(_) => bail!("Worker-thread panicked"),
+    }
+    Ok(())
+}
+
+fn run_runner(
+    conf: Config,
+    build_request: BuildRequest,
+    repo_conf: RepoConfig,
+    sender: Sender<BuildUpdates>,
+) -> Result<()> {
+    let runner = rupert::Runner::new(&conf.meta.build_root, &build_request, Some(sender))
         .chain_err(|| {
             format!("Failed checking out code from {:?}", build_request)
         })?;
@@ -56,6 +81,14 @@ fn run() -> Result<()> {
     }
     println!("Build-result: {:?}", results.successful());
     Ok(())
+}
+
+fn listen(receiver: Receiver<BuildUpdates>) {
+    loop {
+        if receiver.recv().is_err() {
+            break;
+        }
+    }
 }
 
 struct ProgramArgs {

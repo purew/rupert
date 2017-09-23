@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fs::{create_dir_all, remove_dir_all};
 use std::hash::Hasher;
 use std::io::{Bytes, Read};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::Sender;
 use std::thread::sleep;
 use std::time::Duration;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,7 @@ pub struct Runner {
     path_build: PathBuf,
     path_cache: PathBuf,
     repo: git2::Repository,
-    tx: Option<SyncSender<BuildUpdates>>,
+    tx: Option<Sender<BuildUpdates>>,
 }
 
 impl Runner {
@@ -94,7 +94,7 @@ impl Runner {
     pub fn new(
         rupert_root: &Path,
         req: &BuildRequest,
-        tx: Option<SyncSender<BuildUpdates>>,
+        tx: Option<Sender<BuildUpdates>>,
     ) -> Result<Self> {
         let mut path_root = rupert_root.to_owned();
         path_root.push(&req.owner);
@@ -184,6 +184,7 @@ impl Runner {
                     let (s, new_offset) =
                         Runner::grab_more_bytes_from_child(&mut child, stdout_byte)?;
                     stdout_byte = new_offset;
+                    stdout_agg += &s;
                     self.send_update(BuildUpdates::StepNewOutput(s))?;
                     match val {
                         Some(retval) => {
@@ -227,7 +228,7 @@ impl Runner {
     fn send_update(&self, update: BuildUpdates) -> Result<()> {
         match &self.tx {
             &Some(ref tx) => {
-                tx.try_send(update).chain_err(
+                tx.send(update).chain_err(
                     || "Send of update to subscriber failed",
                 )
             }
@@ -272,13 +273,13 @@ impl BuildResult {
 }
 
 /// A single step in a build
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct BuildInstruction {
     steps: Vec<BuildStep>,
 }
 
 /// A single step in a build
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct BuildStep {
     cmd: String,
 }
