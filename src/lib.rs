@@ -8,6 +8,7 @@ extern crate toml;
 extern crate git2;
 #[macro_use]
 extern crate lazy_static;
+extern crate yansi;
 
 #[macro_use]
 extern crate log;
@@ -68,14 +69,6 @@ impl BuildRequest {
     }
 }
 
-#[derive(Debug)]
-pub enum BuildUpdates {
-    Started,
-    StepStarted(String),
-    StepNewOutput(String),
-    StepFinished(BuildStepResult),
-    Finished,
-}
 
 /// repo:commit checked out on local path
 pub struct Runner {
@@ -84,7 +77,7 @@ pub struct Runner {
     path_build: PathBuf,
     path_cache: PathBuf,
     repo: git2::Repository,
-    tx: Option<Sender<BuildUpdates>>,
+    tx: Option<Sender<utils::BuildUpdates>>,
 }
 
 impl Runner {
@@ -94,7 +87,7 @@ impl Runner {
     pub fn new(
         rupert_root: &Path,
         req: &BuildRequest,
-        tx: Option<Sender<BuildUpdates>>,
+        tx: Option<Sender<utils::BuildUpdates>>,
     ) -> Result<Self> {
         let mut path_root = rupert_root.to_owned();
         path_root.push(&req.owner);
@@ -163,42 +156,38 @@ impl Runner {
     }
 
     fn spawn_child(&self, step: &BuildStep) -> Result<BuildStepResult> {
-        info!("Executing child with {}", &step.cmd);
-        let mut child = Command::new("bash")
+        self.send_update(
+            utils::BuildUpdates::StepStarted(step.cmd.clone()),
+        )?;
+        let mut child = Command::new("stdbuf")
             .current_dir(&self.path_build)
             .env("BUILD_PATH", &self.path_build)
-            .args(&["-c", &step.cmd])
+            .args(&["-oL", "bash", "-c", &step.cmd])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .chain_err(|| "Failed executing step")?;
-        self.send_update(BuildUpdates::Started)?;
 
         let mut status = BuildStatus::InProgress;
         let mut keep_waiting = true;
-        let mut stdout_byte = 0;
         let mut stdout_agg = String::new();
         while keep_waiting {
             match child.try_wait() {
                 Ok(val) => {
-                    let (s, new_offset) =
-                        Runner::grab_more_bytes_from_child(&mut child, stdout_byte)?;
-                    stdout_byte = new_offset;
-                    stdout_agg += &s;
-                    self.send_update(BuildUpdates::StepNewOutput(s))?;
-                    match val {
-                        Some(retval) => {
-                            status = if retval.success() {
-                                BuildStatus::Successful
-                            } else {
-                                BuildStatus::Failed
-                            };
-                            keep_waiting = false;
-                        }
-                        None => {
-                            // TODO Add timeout
-                            sleep(Duration::new(1, 0));
-                        }
+                    let s = Runner::grab_more_bytes_from_child(&mut child)?;
+                    if !s.is_empty() {
+                        stdout_agg += &s;
+                        self.send_update(utils::BuildUpdates::StepNewOutput(
+                            utils::TextOutput::Stdout(s),
+                        ))?;
+                    }
+                    if let Some(retval) = val {
+                        status = if retval.success() {
+                            BuildStatus::Successful
+                        } else {
+                            BuildStatus::Failed
+                        };
+                        keep_waiting = false;
                     }
                 }
                 Err(e) => {
@@ -213,19 +202,19 @@ impl Runner {
         })
     }
 
-    fn grab_more_bytes_from_child(child: &mut Child, offset: usize) -> Result<(String, usize)> {
-        use std::io;
+    fn grab_more_bytes_from_child(child: &mut Child) -> Result<String> {
         let new_out = child.stdout.as_mut().unwrap().bytes();
         let bytes = new_out
-            .skip(offset)
             .map(|v| v.chain_err(|| "Failed reading child output"))
+            .take_while(|v| match v {
+                &Ok(ref c) => if *c as usize == 10 { false } else { true },
+                _ => true,
+            })
             .collect::<Result<Vec<u8>>>()?;
-        let new_offset = offset + bytes.len();
-        let s = String::from_utf8_lossy(&bytes).into_owned();
-        Ok((s, new_offset))
+        Ok(String::from_utf8_lossy(&bytes).trim().into())
     }
 
-    fn send_update(&self, update: BuildUpdates) -> Result<()> {
+    fn send_update(&self, update: utils::BuildUpdates) -> Result<()> {
         match &self.tx {
             &Some(ref tx) => {
                 tx.send(update).chain_err(

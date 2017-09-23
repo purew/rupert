@@ -2,10 +2,12 @@
 use std::io::Read;
 use std::fs::{DirBuilder, File, create_dir, read_dir, copy};
 use std::error::Error;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
 use toml;
+use yansi::Paint;
 
 use BuildInstruction;
 use BuildStep;
@@ -43,6 +45,59 @@ pub struct RepoConfig {
     pub build_instruction: BuildInstruction,
 }
 
+#[derive(Debug)]
+pub enum TextOutput {
+    Stdout(String),
+    Stderr(String),
+}
+
+impl fmt::Display for TextOutput {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &TextOutput::Stdout(ref s) => write!(f, "{}", s),
+            &TextOutput::Stderr(ref s) => write!(f, "{}", Paint::red(s)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum BuildUpdates {
+    Started,
+    StepStarted(String),
+    StepNewOutput(TextOutput),
+    StepFinished(::BuildStepResult),
+    Finished,
+}
+
+impl fmt::Display for BuildUpdates {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &BuildUpdates::Started => write!(f, "{}", Paint::yellow("Starting build")),
+            &BuildUpdates::StepStarted(ref s) => {
+                write!(
+                    f,
+                    "{}",
+                    Paint::yellow(format!("{}: {}", "Starting step", s))
+                )
+            }
+            &BuildUpdates::StepNewOutput(ref s) => write!(f, "{}", s),
+            &BuildUpdates::StepFinished(ref res) => {
+                match res.status {
+
+                    ::BuildStatus::Successful => {
+                        write!(f, "{}", Paint::yellow("Finished build-step"))
+                    }
+                    ::BuildStatus::Failed => {
+                        write!(f, "{}", Paint::red("Finished build-step with failure"))
+                    }
+                    _ => unimplemented!(),
+                }
+            }
+            &BuildUpdates::Finished => write!(f, "{}", Paint::yellow("Finished  build")),
+        }
+
+    }
+}
 
 pub fn load_config(path: Option<PathBuf>) -> Result<Config> {
     let path = path.unwrap_or(Path::new(FNAME_CONFIG).into());
@@ -93,9 +148,6 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn prettify_command_output(raw: &[u8]) -> String {
-    String::from_utf8_lossy(raw).replace("\\n", "\n")
-}
 
 #[cfg(test)]
 mod tests {

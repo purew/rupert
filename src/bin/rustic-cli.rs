@@ -14,9 +14,9 @@ use std::thread;
 use log::LogLevelFilter;
 use env_logger::LogBuilder;
 
-use rupert::{BuildStatus, BuildUpdates, BuildRequest};
+use rupert::{BuildStatus, BuildRequest};
 use rupert::errors::*;
-use rupert::utils::{RepoConfig, Config};
+use rupert::utils::{BuildUpdates, Config, RepoConfig};
 
 
 fn run() -> Result<()> {
@@ -85,8 +85,9 @@ fn run_runner(
 
 fn listen(receiver: Receiver<BuildUpdates>) {
     loop {
-        if receiver.recv().is_err() {
-            break;
+        match receiver.recv() {
+            Ok(out) => println!("{}", out),
+            Err(_) => break,
         }
     }
 }
