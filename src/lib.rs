@@ -98,6 +98,7 @@ impl Runner {
         let path_build = Runner::path_build(&path_root, &req.commit);
 
         let url = req.build_clone_url();
+        info!("init repo in {:?}", path_repo);
         let repo = utils::git::init_repo(&path_repo, &url)?;
         utils::git::fetch_origin_branches(&repo)?;
         utils::git::checkout(&repo, &req.commit)?;
@@ -138,14 +139,12 @@ impl Runner {
 
     /// Execute build-steps from configuration on local code
     pub fn execute(self, build_instruction: &BuildInstruction) -> Result<BuildResult> {
-
         self.prepare_dirs()?;
-
         info!("Executing build in {:?}", self.path_build);
         let mut results = Vec::new();
         for step in &build_instruction.steps {
             // TODO Clean env so Command runs without outside knowledge
-            let step_result = self.spawn_child(&step)?;
+            let step_result = self.spawn_step_worker(&step)?;
             let status = step_result.status.clone();
             results.push(step_result);
             if status != BuildStatus::Successful {
@@ -155,13 +154,14 @@ impl Runner {
         Ok(BuildResult { steps: results })
     }
 
-    fn spawn_child(&self, step: &BuildStep) -> Result<BuildStepResult> {
+    fn spawn_step_worker(&self, step: &BuildStep) -> Result<BuildStepResult> {
         self.send_update(
             utils::BuildUpdates::StepStarted(step.cmd.clone()),
         )?;
         let mut child = Command::new("stdbuf")
             .current_dir(&self.path_build)
-            .env("BUILD_PATH", &self.path_build)
+            .env("PATH_BUILD", &self.path_build)
+            .env("PATH_CACHE", &self.path_cache)
             .args(&["-oL", "bash", "-c", &step.cmd])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -171,17 +171,27 @@ impl Runner {
         let mut status = BuildStatus::InProgress;
         let mut keep_waiting = true;
         let mut stdout_agg = String::new();
+        let mut stderr_agg = String::new();
         while keep_waiting {
             match child.try_wait() {
                 Ok(val) => {
-                    let s = Runner::grab_more_bytes_from_child(&mut child)?;
-                    if !s.is_empty() {
-                        stdout_agg += &s;
+                    let stdout = Runner::grab_line_from_stdout(&mut child)?;
+                    if !stdout.is_empty() {
+                        stdout_agg += &stdout;
                         self.send_update(utils::BuildUpdates::StepNewOutput(
-                            utils::TextOutput::Stdout(s),
+                            utils::TextOutput::Stdout(stdout),
                         ))?;
                     }
                     if let Some(retval) = val {
+                        let stderr = Runner::grab_stderr(&mut child)?;
+                        if !stderr.is_empty() {
+                            stderr_agg += &stderr;
+                            self.send_update(utils::BuildUpdates::StepNewOutput(
+                                utils::TextOutput::Stderr(format!(
+                                    "------------- Rupert: Delayed stderr:\n{}\n------------- End of delayed stderr", stderr)
+                                ),
+                            ))?;
+                        }
                         status = if retval.success() {
                             BuildStatus::Successful
                         } else {
@@ -202,16 +212,38 @@ impl Runner {
         })
     }
 
-    fn grab_more_bytes_from_child(child: &mut Child) -> Result<String> {
-        let new_out = child.stdout.as_mut().unwrap().bytes();
+    fn grab_line_from_stdout(child: &mut Child) -> Result<String> {
+        let new_out = child
+            .stdout
+            .as_mut()
+            .chain_err(|| "Could not grab stdout")?
+            .bytes();
         let bytes = new_out
             .map(|v| v.chain_err(|| "Failed reading child output"))
             .take_while(|v| match v {
-                &Ok(ref c) => if *c as usize == 10 { false } else { true },
+                &Ok(ref c) => {
+                    //info!("stdout: {}", c);
+                    if *c as usize == 10 { false } else { true }
+                }
                 _ => true,
             })
             .collect::<Result<Vec<u8>>>()?;
-        Ok(String::from_utf8_lossy(&bytes).trim().into())
+        let stdout = String::from_utf8_lossy(&bytes).trim().into();
+        Ok(stdout)
+    }
+    fn grab_stderr(child: &mut Child) -> Result<String> {
+        // TODO Currently grabbing all of stderr after child-process has finished
+        // instead of interweaved with stdout as there is no "try_read" function.
+        let mut buffer = Vec::new();
+        child
+            .stderr
+            .as_mut()
+            .chain_err(|| "Could not grab stderr")?
+            .read_to_end(&mut buffer)
+            .chain_err(|| "Failed reading child stderr")?;
+
+        let stderr = String::from_utf8_lossy(&buffer).trim().into();
+        Ok(stderr)
     }
 
     fn send_update(&self, update: utils::BuildUpdates) -> Result<()> {
@@ -227,7 +259,7 @@ impl Runner {
 
     fn subdir(root: &PathBuf, name: &str) -> PathBuf {
         let mut path = root.to_owned();
-        path.push("cache");
+        path.push(name);
         path
     }
 
