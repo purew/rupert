@@ -1,5 +1,5 @@
 
-[config]
+[meta]
 build_root = "/opt/rupert/build_root"
 
 [[repos]]
@@ -7,3 +7,7 @@ integration = "bitbucket"
 owner = "superman"
 reponame = "linux"
 api_token = "banana-crepes"
+build_instruction = { steps = [
+      {cmd = "make"},
+      {cmd = "make test"},
+    ]}

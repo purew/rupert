@@ -16,5 +16,5 @@ It is up to the user of `rupert` to decide.
 
 # Config file
 
-`rupert`s entire configuration resides in `rupert-conf.toml`.
+`rupert`s entire configuration resides in `rupert-conf.toml`. See example config-file in `rupert-conf-example.toml`.
 
